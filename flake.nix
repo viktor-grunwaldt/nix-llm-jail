@@ -98,10 +98,34 @@
           '';
         };
 
+        # Gracefully stop the guest even when SSH or guest userspace is stuck.
+        stop-ai-agent = pkgs.writeShellApplication {
+          name = "stop-ai-agent";
+          runtimeInputs = [ pkgs.python314Packages.qemu-qmp ];
+
+          text = ''
+            runtime_dir="''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/ai-agent-microvm"
+            socket="$runtime_dir/ai-agent.sock"
+
+            if [ ! -S "$socket" ]; then
+              echo "error: QMP socket not found: $socket" >&2
+              exit 1
+            fi
+
+            printf '%s\n' system_powerdown | qmp-shell "$socket"
+          '';
+        };
+
       };
-      apps.${system}.default = {
-        type = "app";
-        program = "${self.packages.${system}.run-ai-agent}/bin/run-ai-agent";
+      apps.${system} = {
+        default = {
+          type = "app";
+          program = "${self.packages.${system}.run-ai-agent}/bin/run-ai-agent";
+        };
+        stop-ai-agent = {
+          type = "app";
+          program = "${self.packages.${system}.stop-ai-agent}/bin/stop-ai-agent";
+        };
       };
     };
 }
