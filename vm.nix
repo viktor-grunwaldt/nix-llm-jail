@@ -80,6 +80,11 @@ in
     opencodePkgs.opencode
   ];
 
+  # Forward application OSC 52 writes through SSH to the host terminal.
+  environment.etc."tmux.conf".text = ''
+    set -g set-clipboard on
+  '';
+
   # --- SSH access & user setup ------------------------------------------
   services.openssh.enable = true;
   services.openssh.settings.PasswordAuthentication = false;
