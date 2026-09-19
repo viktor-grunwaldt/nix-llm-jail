@@ -67,7 +67,8 @@ in
       }
     ];
 
-    writableStoreOverlay = null;
+    # Keep host store paths immutable while allowing ephemeral guest builds.
+    writableStoreOverlay = "/nix/.rw-store";
   };
 
   # --- Guest software ---------------------------------------------------
@@ -84,6 +85,12 @@ in
   environment.etc."tmux.conf".text = ''
     set -g set-clipboard on
   '';
+
+  # The host checkout is already enforced read-only by virtiofsd.
+  environment.etc."opencode/opencode.json".text = builtins.toJSON {
+    "$schema" = "https://opencode.ai/config.json";
+    permission.external_directory."/mnt/host/**" = "allow";
+  };
 
   # --- SSH access & user setup ------------------------------------------
   services.openssh.enable = true;
@@ -106,11 +113,17 @@ in
     serviceConfig.Type = "oneshot";
     script = ''
       install -d -m 0700 -o ${user} -g users /var/lib/opencode
+      install -d -m 0700 -o ${user} -g users /var/lib/opencode/.local-state
       install -d -m 0755 -o ${user} -g users \
         /home/${user}/.local \
         /home/${user}/.local/share \
         /home/${user}/.local/state
+      install -d -m 0755 -o ${user} -g users \
+        /home/${user}/.config \
+        /home/${user}/.config/opencode
       ln -s /var/lib/opencode /home/${user}/.local/share/opencode
+      ln -s /var/lib/opencode/.local-state /home/${user}/.local/state/opencode
+      ln -sfn /mnt/host/AGENTS.md /home/${user}/.config/opencode/AGENTS.md
     '';
   };
 
