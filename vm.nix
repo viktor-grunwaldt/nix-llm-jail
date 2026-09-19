@@ -101,7 +101,10 @@ in
     serviceConfig.Type = "oneshot";
     script = ''
       install -d -m 0700 -o ${user} -g users /var/lib/opencode
-      mkdir -p /home/${user}/.local/share
+      install -d -m 0755 -o ${user} -g users \
+        /home/${user}/.local \
+        /home/${user}/.local/share \
+        /home/${user}/.local/state
       ln -s /var/lib/opencode /home/${user}/.local/share/opencode
     '';
   };
