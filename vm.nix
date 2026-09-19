@@ -26,7 +26,13 @@ in
     vcpu = 4;
     mem = 8192;
 
-    volumes = [ ];
+    volumes = [
+      {
+        image = "/home/vi/images/llm-jail/shared/opencode-state.img";
+        mountPoint = "/var/lib/opencode";
+        size = 2048;
+      }
+    ];
 
     interfaces = [
       {
@@ -70,6 +76,7 @@ in
     pkgs.tmux
     pkgs.helix
     pkgs.ripgrep
+    pkgs.git
     opencodePkgs.opencode
   ];
 
@@ -84,6 +91,19 @@ in
       "docker"
     ];
     openssh.authorizedKeys.keys = [ (builtins.readFile ./id_ed25519.pub) ];
+  };
+
+  # Keep OpenCode state, including authentication, on the dedicated volume.
+  systemd.services.setup-opencode-state = {
+    wantedBy = [ "multi-user.target" ];
+    after = [ "local-fs.target" ];
+    before = [ "sshd.service" ];
+    serviceConfig.Type = "oneshot";
+    script = ''
+      install -d -m 0700 -o ${user} -g users /var/lib/opencode
+      mkdir -p /home/${user}/.local/share
+      ln -s /var/lib/opencode /home/${user}/.local/share/opencode
+    '';
   };
 
   security.sudo.wheelNeedsPassword = false;
