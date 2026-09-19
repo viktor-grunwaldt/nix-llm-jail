@@ -1,4 +1,9 @@
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   user = "agent";
 in
@@ -15,33 +20,26 @@ in
   microvm = {
     hypervisor = "qemu";
     vcpu = 4;
-    mem = 8192; # MB. Also bounds the tmpfs root/overlay size — see note below.
+    mem = 8192;
 
-    # No block-device volumes on purpose: the root filesystem is a
-    # read-only squashfs/erofs plus a tmpfs overlay for writes, both gone
-    # the moment the VM exits. That's what gives you a jail that resets
-    # itself every run instead of accumulating state. If some agent
-    # workload needs more scratch space than `mem` comfortably allows,
-    # add a `volumes = [ { image = "scratch.img"; mountPoint = "/tmp"; size = ...; } ];`
-    # entry — just know that reintroduces state you have to manage.
     volumes = [ ];
 
-    interfaces = [{
-      type = "user"; # qemu SLIRP networking — no host-side tap/bridge setup needed
-      id = "eth0";
-      mac = "02:00:00:00:00:01";
-    }];
-
-    forwardPorts = [
-      { from = "host"; host.port = 2222; guest.port = 22; }
+    interfaces = [
+      {
+        type = "user";
+        id = "eth0";
+        mac = "02:00:00:00:00:01";
+      }
     ];
 
-    # Both shares are exported read-only from the host side, by the
-    # virtiofsd instances the `run-ai-agent` wrapper in flake.nix starts
-    # with `--readonly`. The `source` field below is informational only
-    # in this standalone setup (no host module reads it to spawn
-    # virtiofsd for you) — the wrapper's `--shared-dir` is what actually
-    # controls what gets exported. Keep them pointing at the same path.
+    forwardPorts = [
+      {
+        from = "host";
+        host.port = 2222;
+        guest.port = 22;
+      }
+    ];
+
     shares = [
       {
         tag = "ro-store";
@@ -59,14 +57,19 @@ in
       }
     ];
 
-    # Keep /nix/store genuinely read-only in the guest (no writable
-    # overlay). If the agent needs to `nix build` inside the VM, this has
-    # to become a path plus a matching `volumes` entry for the upper
-    # layer — 9p/virtiofs can't be the overlay's writable side.
     writableStoreOverlay = null;
   };
 
-  # --- SSH access & user setup -------------------------------------------
+  # --- Guest software ---------------------------------------------------
+  environment.systemPackages = [
+    pkgs.codex
+    pkgs.tmux
+    pkgs.helix
+    pkgs.ripgrep
+    pkgs.opencode
+  ];
+
+  # --- SSH access & user setup ------------------------------------------
   services.openssh.enable = true;
   services.openssh.settings.PasswordAuthentication = false;
 
@@ -81,18 +84,35 @@ in
 
   security.sudo.wheelNeedsPassword = false;
 
-  # --- Network isolation from the host ------------------------------------
+  # --- Network isolation from the host ----------------------------------
   networking.firewall.enable = true;
   networking.nftables.enable = true;
+
   networking.nftables.tables."isolate-vm" = {
     family = "inet";
     content = ''
       chain output {
-        type filter hook output priority filter; policy accept;
-        # Allow replies to connections initiated by the host (like SSH)
+        type filter hook output priority filter; policy drop;
+
+        # Existing connections.
         ct state established,related accept
-        # Block the agent from initiating NEW connections to the host gateway
-        ip daddr 10.0.2.2 drop
+
+        # Loopback.
+        oifname "lo" accept
+
+        # QEMU SLIRP DNS.
+        ip daddr 10.0.2.3 udp dport 53 accept
+        ip daddr 10.0.2.3 tcp dport 53 accept
+
+        # Block access to host/private networks.
+        ip daddr 10.0.0.0/8 drop
+        ip daddr 172.16.0.0/12 drop
+        ip daddr 192.168.0.0/16 drop
+        ip daddr 169.254.0.0/16 drop
+
+        # Provider/API traffic.
+        tcp dport { 80, 443 } accept
+        udp dport 443 accept
       }
     '';
   };

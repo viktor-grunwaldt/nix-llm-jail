@@ -44,9 +44,8 @@
             pkgs.virtiofsd
             pkgs.coreutils
           ];
+
           text = ''
-            # Per-user, not world-readable like /tmp would be — matters once
-            # more than one local account can invoke this.
             runtime_dir="''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/ai-agent-microvm"
             mkdir -p "$runtime_dir"
             chmod 700 "$runtime_dir"
@@ -64,8 +63,6 @@
               --readonly &
 
             echo "Starting virtiofsd: read-only workspace..."
-            # <-- change this path to whatever host directory the agent
-            # should be able to read from.
             virtiofsd \
               --socket-path="$runtime_dir/host-ro.sock" \
               --shared-dir="/home/vi/images/llm-jail/shared" \
@@ -76,15 +73,22 @@
                 [ -S "$runtime_dir/$sock" ] && break
                 sleep 0.1
               done
+
+              if [ ! -S "$runtime_dir/$sock" ]; then
+                echo "error: virtiofsd socket did not appear: $sock" >&2
+                exit 1
+              fi
             done
 
-            # Find the runner binary by convention rather than hardcoding its
-            # name, since that's an internal detail of the declaredRunner
-            # derivation and not guaranteed stable across microvm.nix versions.
-            runner="$(find "${
-              self.packages.${system}.ai-agent
-            }/bin" -maxdepth 1 -type f -executable | head -n1)"
-            "$runner"
+            runner="${self.packages.${system}.ai-agent}/bin/microvm-run"
+
+            if [ ! -x "$runner" ]; then
+              echo "error: VM runner is not executable: $runner" >&2
+              exit 1
+            fi
+
+            echo "Starting ai-agent microVM..."
+            exec "$runner"
           '';
         };
 
