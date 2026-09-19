@@ -5,6 +5,8 @@
     nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
     microvm.url = "github:microvm-nix/microvm.nix";
     microvm.inputs.nixpkgs.follows = "nixpkgs"; # dedupe evaluation, not an extra trust boundary
+    nixpkgs-opencode.url =
+      "github:NixOS/nixpkgs/99b76fd9b396189197d2ecce519ab6d7cd522ab5";
   };
 
   outputs =
@@ -12,7 +14,8 @@
       self,
       nixpkgs,
       microvm,
-    }:
+      nixpkgs-opencode,
+    } @ inputs:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
@@ -24,6 +27,9 @@
       # than a systemd service managed by a NixOS host.
       nixosConfigurations.ai-agent = nixpkgs.lib.nixosSystem {
         inherit system;
+        specialArgs = {
+          inherit inputs;
+        };
         modules = [
           microvm.nixosModules.microvm
           ./vm.nix

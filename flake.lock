@@ -34,10 +34,27 @@
         "url": "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz"
       }
     },
+    "nixpkgs-opencode": {
+      "locked": {
+        "lastModified": 1789729165,
+        "narHash": "sha256-956201nCm2aYi43jl91bd2iR0xfGUpMUzY0GsExQOwA=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "99b76fd9b396189197d2ecce519ab6d7cd522ab5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "99b76fd9b396189197d2ecce519ab6d7cd522ab5",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "microvm": "microvm",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "nixpkgs-opencode": "nixpkgs-opencode"
       }
     },
     "spectrum": {

@@ -2,10 +2,14 @@
   config,
   lib,
   pkgs,
+  inputs,
   ...
 }:
 let
   user = "agent";
+  opencodePkgs = import inputs.nixpkgs-opencode {
+    system = pkgs.system;
+  };
 in
 {
   networking.hostName = "ai-agent";
@@ -66,7 +70,7 @@ in
     pkgs.tmux
     pkgs.helix
     pkgs.ripgrep
-    pkgs.opencode
+    opencodePkgs.opencode
   ];
 
   # --- SSH access & user setup ------------------------------------------
