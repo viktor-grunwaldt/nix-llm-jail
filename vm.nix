@@ -28,7 +28,11 @@ in
 
     volumes = [
       {
-        image = "/home/vi/images/llm-jail/shared/opencode-state.img";
+        # Reuse the existing disk containing OpenCode sessions and OAuth state.
+        # Keep this absolute: the launcher runs from XDG_RUNTIME_DIR.
+        image = "/home/vi/images/llm-jail/shared/nix/opencode-state.img";
+        # A missing state disk must fail startup, not silently create empty state.
+        autoCreate = false;
         mountPoint = "/var/lib/opencode";
         size = 2048;
       }
