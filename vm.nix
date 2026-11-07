@@ -27,17 +27,28 @@ in
     vcpu = 4;
     mem = 8192;
 
+    # Keep image paths absolute: the launcher runs from XDG_RUNTIME_DIR.
     volumes = [
       {
-        # Reuse the existing disk containing OpenCode sessions and OAuth state.
-        # Keep this absolute: the launcher runs from XDG_RUNTIME_DIR.
-        image = "/home/vi/images/llm-jail/shared/nix/opencode-state.img";
-        # A missing state disk must fail startup, not silently create empty state.
-        autoCreate = false;
-        # OpenCode writes its database and logs here; keep the state disk writable.
-        readOnly = false;
-        mountPoint = "/var/lib/opencode";
+        # Agent state: Claude Code and pi logins/sessions, SSH host keys.
+        # Holds credentials; never use it for project files. Kept outside the
+        # shared directory so the guest cannot read it through /mnt/host.
+        image = "/home/vi/images/llm-jail/agent-state.img";
+        # Created empty on first start; losing it only means logging in again.
+        autoCreate = true;
+        label = "agent-state";
+        mountPoint = "/var/lib/agent-state";
         size = 2048;
+      }
+      {
+        # Agent working copies. The host pulls from them with `git fetch` over
+        # SSH; never loop-mount this guest-written image on the host.
+        image = "/home/vi/images/llm-jail/work.img";
+        # Created empty (sparse) on first start.
+        autoCreate = true;
+        label = "agent-work";
+        mountPoint = "/home/${user}/work";
+        size = 32768;
       }
     ];
 
@@ -52,6 +63,8 @@ in
     forwardPorts = [
       {
         from = "host";
+        # Loopback only; an empty address would expose SSH on every host interface.
+        host.address = "127.0.0.1";
         host.port = 2222;
         guest.port = 22;
       }
@@ -83,37 +96,49 @@ in
     pkgs.tmux
     pkgs.helix
     pkgs.ripgrep
-    pkgs.git
     pkgs.pi-coding-agent
     pkgs.claude-code
   ];
 
+  # Commits made in the VM are recognisably the agent's when the host fetches them.
+  programs.git = {
+    enable = true;
+    config.user = {
+      name = "ai-agent";
+      email = "agent@ai-agent.invalid";
+    };
+  };
+
   # Forward application OSC 52 writes through SSH to the host terminal.
   environment.etc."tmux.conf".text = ''
     set -g set-clipboard on
-    # OpenCode v2 wraps OSC 52 clipboard writes in tmux DCS passthrough.
+    # Some TUIs wrap OSC 52 clipboard writes in tmux DCS passthrough.
     set -g allow-passthrough on
     # Forward terminal focus in/out events to applications (e.g. editor autoread).
     set -g focus-events on
   '';
 
-  # The host checkout is already enforced read-only by virtiofsd.
-  environment.etc."opencode/opencode.json".text = builtins.toJSON {
-    "$schema" = "https://opencode.ai/config.json";
-    permissions = [
-      {
-        action = "external_directory";
-        resource = "/mnt/host/**";
-        effect = "allow";
-      }
-    ];
-    # Provider-side cache keep-alives: every 4 idle minutes, for 30 minutes.
-    warming = true;
-  };
+  # Keep all Claude Code state, including .claude.json (login, onboarding) and
+  # .credentials.json, in one directory on the persistent volume; see below.
+  environment.variables.CLAUDE_CONFIG_DIR = "/home/${user}/.claude";
+  # pi keeps auth.json, sessions, settings and trust decisions here.
+  environment.variables.PI_CODING_AGENT_DIR = "/var/lib/agent-state/pi";
 
   # --- SSH access & user setup ------------------------------------------
   services.openssh.enable = true;
   services.openssh.settings.PasswordAuthentication = false;
+  # Stable host keys, so the host can pin them (HostKeyAlias ai-agent) once.
+  services.openssh.hostKeys = [
+    {
+      type = "ed25519";
+      path = "/var/lib/agent-state/ssh/ssh_host_ed25519_key";
+    }
+    {
+      type = "mldsa44-ed25519";
+      path = "/var/lib/agent-state/ssh/ssh_host_mldsa44_ed25519_key";
+    }
+  ];
+  systemd.services.sshd-keygen.unitConfig.RequiresMountsFor = [ "/var/lib/agent-state" ];
 
   users.users.${user} = {
     isNormalUser = true;
@@ -124,18 +149,23 @@ in
     openssh.authorizedKeys.keys = [ (builtins.readFile ./id_ed25519.pub) ];
   };
 
-  # Keep OpenCode state, authentication and user config on the dedicated volume.
-  systemd.services.setup-opencode-state = {
+  # Wire the persistent volumes into the ephemeral home directory and give
+  # every agent the VM instructions from the host share.
+  systemd.services.setup-agent-state = {
     wantedBy = [ "multi-user.target" ];
     after = [ "local-fs.target" ];
     before = [ "sshd.service" ];
-    unitConfig.RequiresMountsFor = [ "/var/lib/opencode" ];
+    unitConfig.RequiresMountsFor = [
+      "/var/lib/agent-state"
+      "/home/${user}/work"
+    ];
     serviceConfig.Type = "oneshot";
     script = ''
-      ${pkgs.util-linux}/bin/mountpoint -q /var/lib/opencode
+      ${pkgs.util-linux}/bin/mountpoint -q /var/lib/agent-state
+      ${pkgs.util-linux}/bin/mountpoint -q /home/${user}/work
 
       # Accept the intended link on repeat runs, but never replace another path.
-      link_directory() {
+      ensure_link() {
         local target="$1" link="$2"
         if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then
           return
@@ -147,37 +177,14 @@ in
         ln -sT "$target" "$link"
       }
 
-      install -d -m 0700 -o ${user} -g users /var/lib/opencode
-      install -d -m 0700 -o ${user} -g users /var/lib/opencode/.local-state
-      install -d -m 0755 -o ${user} -g users \
-        /home/${user}/.local \
-        /home/${user}/.local/share \
-        /home/${user}/.local/state
-      install -d -m 0755 -o ${user} -g users /home/${user}/.config
-      config=/home/${user}/.config/opencode
-      persistent=/var/lib/opencode/.config
-      if [ -L "$persistent" ] || { [ -e "$persistent" ] && [ ! -d "$persistent" ]; }; then
-        echo "Persistent config must be a real directory" >&2
-        exit 1
-      fi
-      if [ -d "$config" ] && [ ! -L "$config" ]; then
-        # An empty home directory is safe to replace, even with saved config.
-        if ! rmdir "$config" 2>/dev/null; then
-          if [ -e "$persistent" ] || [ -e "$config.pre-persistence" ] || [ -L "$config.pre-persistence" ]; then
-            echo "Config migration conflict; preserve and reconcile both directories before retrying" >&2
-            exit 1
-          fi
-          # Copy metadata and symlinks without dereferencing them. Keep the
-          # original until the next boot; a failed copy never removes it.
-          cp -aT "$config" "$persistent"
-          mv -T "$config" "$config.pre-persistence"
-        fi
-      fi
-      install -d -m 0700 -o ${user} -g users "$persistent"
-      link_directory "$persistent" "$config"
-      link_directory /var/lib/opencode /home/${user}/.local/share/opencode
-      link_directory /var/lib/opencode/.local-state /home/${user}/.local/state/opencode
-      link_directory /mnt/host/AGENTS.md "$config/AGENTS.md"
+      install -d -m 0700 -o ${user} -g users \
+        /var/lib/agent-state \
+        /var/lib/agent-state/.claude \
+        /var/lib/agent-state/pi
+      install -d -m 0755 -o ${user} -g users /home/${user}/work
+      ensure_link /var/lib/agent-state/.claude /home/${user}/.claude
+      ensure_link /mnt/host/AGENTS.md /var/lib/agent-state/.claude/CLAUDE.md
+      ensure_link /mnt/host/AGENTS.md /var/lib/agent-state/pi/AGENTS.md
     '';
   };
 
