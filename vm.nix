@@ -16,7 +16,11 @@ in
     "flakes"
     "pipe-operators"
   ];
-
+  nixpkgs.config.allowUnfreePredicate = pkg:
+    builtins.elem (lib.getName pkg) [
+      # Add additional package names here
+      "claude-code"
+    ];
   # --- microvm.nix ------------------------------------------------------
   microvm = {
     hypervisor = "qemu";
@@ -81,6 +85,7 @@ in
     pkgs.ripgrep
     pkgs.git
     pkgs.pi-coding-agent
+    pkgs.claude-code
   ];
 
   # Forward application OSC 52 writes through SSH to the host terminal.
@@ -88,6 +93,8 @@ in
     set -g set-clipboard on
     # OpenCode v2 wraps OSC 52 clipboard writes in tmux DCS passthrough.
     set -g allow-passthrough on
+    # Forward terminal focus in/out events to applications (e.g. editor autoread).
+    set -g focus-events on
   '';
 
   # The host checkout is already enforced read-only by virtiofsd.
