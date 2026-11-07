@@ -7,9 +7,6 @@
 }:
 let
   user = "agent";
-  opencodePkgs = import inputs.nixpkgs-opencode {
-    system = pkgs.system;
-  };
 in
 {
   networking.hostName = "ai-agent";
@@ -33,6 +30,8 @@ in
         image = "/home/vi/images/llm-jail/shared/nix/opencode-state.img";
         # A missing state disk must fail startup, not silently create empty state.
         autoCreate = false;
+        # OpenCode writes its database and logs here; keep the state disk writable.
+        readOnly = false;
         mountPoint = "/var/lib/opencode";
         size = 2048;
       }
@@ -77,23 +76,32 @@ in
 
   # --- Guest software ---------------------------------------------------
   environment.systemPackages = [
-    pkgs.codex
     pkgs.tmux
     pkgs.helix
     pkgs.ripgrep
     pkgs.git
-    opencodePkgs.opencode
+    pkgs.pi-coding-agent
   ];
 
   # Forward application OSC 52 writes through SSH to the host terminal.
   environment.etc."tmux.conf".text = ''
     set -g set-clipboard on
+    # OpenCode v2 wraps OSC 52 clipboard writes in tmux DCS passthrough.
+    set -g allow-passthrough on
   '';
 
   # The host checkout is already enforced read-only by virtiofsd.
   environment.etc."opencode/opencode.json".text = builtins.toJSON {
     "$schema" = "https://opencode.ai/config.json";
-    permission.external_directory."/mnt/host/**" = "allow";
+    permissions = [
+      {
+        action = "external_directory";
+        resource = "/mnt/host/**";
+        effect = "allow";
+      }
+    ];
+    # Provider-side cache keep-alives: every 4 idle minutes, for 30 minutes.
+    warming = true;
   };
 
   # --- SSH access & user setup ------------------------------------------
@@ -109,25 +117,60 @@ in
     openssh.authorizedKeys.keys = [ (builtins.readFile ./id_ed25519.pub) ];
   };
 
-  # Keep OpenCode state, including authentication, on the dedicated volume.
+  # Keep OpenCode state, authentication and user config on the dedicated volume.
   systemd.services.setup-opencode-state = {
     wantedBy = [ "multi-user.target" ];
     after = [ "local-fs.target" ];
     before = [ "sshd.service" ];
+    unitConfig.RequiresMountsFor = [ "/var/lib/opencode" ];
     serviceConfig.Type = "oneshot";
     script = ''
+      ${pkgs.util-linux}/bin/mountpoint -q /var/lib/opencode
+
+      # Accept the intended link on repeat runs, but never replace another path.
+      link_directory() {
+        local target="$1" link="$2"
+        if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then
+          return
+        fi
+        if [ -e "$link" ] || [ -L "$link" ]; then
+          echo "Refusing to replace existing path: $link" >&2
+          return 1
+        fi
+        ln -sT "$target" "$link"
+      }
+
       install -d -m 0700 -o ${user} -g users /var/lib/opencode
       install -d -m 0700 -o ${user} -g users /var/lib/opencode/.local-state
       install -d -m 0755 -o ${user} -g users \
         /home/${user}/.local \
         /home/${user}/.local/share \
         /home/${user}/.local/state
-      install -d -m 0755 -o ${user} -g users \
-        /home/${user}/.config \
-        /home/${user}/.config/opencode
-      ln -s /var/lib/opencode /home/${user}/.local/share/opencode
-      ln -s /var/lib/opencode/.local-state /home/${user}/.local/state/opencode
-      ln -sfn /mnt/host/AGENTS.md /home/${user}/.config/opencode/AGENTS.md
+      install -d -m 0755 -o ${user} -g users /home/${user}/.config
+      config=/home/${user}/.config/opencode
+      persistent=/var/lib/opencode/.config
+      if [ -L "$persistent" ] || { [ -e "$persistent" ] && [ ! -d "$persistent" ]; }; then
+        echo "Persistent config must be a real directory" >&2
+        exit 1
+      fi
+      if [ -d "$config" ] && [ ! -L "$config" ]; then
+        # An empty home directory is safe to replace, even with saved config.
+        if ! rmdir "$config" 2>/dev/null; then
+          if [ -e "$persistent" ] || [ -e "$config.pre-persistence" ] || [ -L "$config.pre-persistence" ]; then
+            echo "Config migration conflict; preserve and reconcile both directories before retrying" >&2
+            exit 1
+          fi
+          # Copy metadata and symlinks without dereferencing them. Keep the
+          # original until the next boot; a failed copy never removes it.
+          cp -aT "$config" "$persistent"
+          mv -T "$config" "$config.pre-persistence"
+        fi
+      fi
+      install -d -m 0700 -o ${user} -g users "$persistent"
+      link_directory "$persistent" "$config"
+      link_directory /var/lib/opencode /home/${user}/.local/share/opencode
+      link_directory /var/lib/opencode/.local-state /home/${user}/.local/state/opencode
+      link_directory /mnt/host/AGENTS.md "$config/AGENTS.md"
     '';
   };
 
