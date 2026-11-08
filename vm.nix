@@ -121,6 +121,11 @@ in
   # Keep all Claude Code state, including .claude.json (login, onboarding) and
   # .credentials.json, in one directory on the persistent volume; see below.
   environment.variables.CLAUDE_CONFIG_DIR = "/home/${user}/.claude";
+  # Disable crap consentually
+  environment.variables.DISABLE_TELEMETRY = "1";
+  environment.variables.DISABLE_ERROR_REPORTING = "1";
+  environment.variables.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY = "1";
+  environment.variables.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
   # pi keeps auth.json, sessions, settings and trust decisions here.
   environment.variables.PI_CODING_AGENT_DIR = "/var/lib/agent-state/pi";
 
